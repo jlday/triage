@@ -59,6 +59,7 @@
 #			[Files]		
 ####################################################################################
 # Dependencies:
+#		- psutil python library (http://code.google.com/p/psutil/) 
 # 		- WinDbg (http://msdn.microsoft.com/en-us/windows/hardware/gg463009.aspx)
 # 		- GFlags (http://msdn.microsoft.com/en-us/windows/hardware/gg463009.aspx)
 # 		- !exploitable WinDbg extension (http://msecdbg.codeplex.com/)
@@ -142,6 +143,7 @@ options:
 ####################################################################################
 # Imports:
 import subprocess, os, shutil, time, hashlib, sys, getopt
+import psutil
 ####################################################################################
 # Global Variables:
 crashFiles = []
@@ -149,7 +151,7 @@ crashDir = outputDir = "Crashes"
 WinDbgPath = "WinDbg"
 target = ""
 logoutput = "crash_details.txt"
-max_time = 10
+max_time = 20
 reportEvery = 1
 useGflags = True
 kill_windows = False
@@ -203,10 +205,22 @@ def GenerateCrashReport(file):
 		if os.path.exists(logoutput):
 			os.remove(logoutput)
 		
-		test = subprocess.Popen(WinDbgPath + os.sep + "windbg.exe -Q -c \"$$<" + WinDbgPath + os.sep + "triage.wds; g;\" -o \"" + target + "\" \"" + file + "\"")
+		test = proc = subprocess.Popen(WinDbgPath + os.sep + "windbg.exe -Q -c \"$$<" + WinDbgPath + os.sep + "triage.wds; g;\" -o \"" + target + "\" \"" + file + "\"")
+		
+		time.sleep(1)
+		timeout = 0
+		while timeout < 3:
+			for p in psutil.process_iter():
+				if p.name.lower() == target[target.rfind(os.sep) + 1:].lower():
+					proc = p
+					break
+			if proc.name.lower() == target[target.rfind(os.sep) + 1:].lower():
+				break
+			time.sleep(1)
+			timeout += 1
 		
 		if kill_windows:
-			windowKiller = window_killer.MultithreadedWindowKiller(test.pid)
+			windowKiller = window_killer.MultithreadedWindowKiller(proc.pid)
 			windowKiller.start()
 		
 		timeout = 0
@@ -361,6 +375,27 @@ def CleanupFiles(path):
 		if os.path.isdir(path + os.sep + file):
 			CleanupFiles(path + os.sep + file)
 
+# Wraps shutil.move so that files are not overwritten
+def MoveFile(source, destination):
+	if os.path.isdir(source):
+		if not os.path.exists(destination):
+			os.mkdir(destination)
+		for file in os.listdir(source):
+			MoveFile(source + os.sep + file, destination + os.sep + file)
+		return
+	elif os.path.isdir(destination):
+		destination += os.sep + source[source.rfind(os.sep) + 1:]
+	if os.path.exists(destination):
+		dup = 1
+		while os.path.exists(destination[:destination.rfind(".")] + "_(" + str(dup) + ")" + destination[destination.rfind("."):]):
+			dup += 1
+		destination = destination[:destination.rfind(".")] + "_(" + str(dup) + ")" + destination[destination.rfind("."):]
+	try:
+		shutil.move(source, destination)
+	except:
+		time.sleep(3)
+		shutil.move(source, destination)
+
 # Main loop for triaging.
 # Takes all files, runs them through a debugger and sorts the output
 # into an organized directory structure 
@@ -394,7 +429,8 @@ def RunTriage():
 					print "Failed to reproduce file: " + file[file.rfind(os.sep) + 1:]
 				if not os.path.exists(outputDir + os.sep + "UnableToReproduce"):
 					os.mkdir(outputDir + os.sep + "UnableToReproduce")
-				shutil.move(file, outputDir + os.sep + "UnableToReproduce" + os.sep + file[file.rfind(os.sep) + 1:])	
+				
+				MoveFile(file, outputDir + os.sep + "UnableToReproduce" + os.sep + file[file.rfind(os.sep) + 1:])
 			else:
 				shutil.move(report, file + "-" + logoutput)
 				report = file + "-" + logoutput
@@ -407,16 +443,16 @@ def RunTriage():
 					if not os.path.exists(outputDir + os.sep + hash):
 						os.mkdir(outputDir + os.sep + hash)
 					group = outputDir + os.sep + hash
-					
-				shutil.move(report, group + os.sep + report[report.rfind(os.sep) + 1:])
-				shutil.move(file, group + os.sep + file[file.rfind(os.sep) + 1:])
+				
+				MoveFile(report, group + os.sep + report[report.rfind(os.sep) + 1:])
+				MoveFile(file, group + os.sep + file[file.rfind(os.sep) + 1:])
 				
 				newPath = SortHashDir(group)
 				
 				BuildPath(newPath)
 				
 				for newFile in os.listdir(group):
-					shutil.move(group + os.sep + newFile, newPath)
+					MoveFile(group + os.sep + newFile, newPath)
 			
 			count += 1
 	except KeyboardInterrupt:
