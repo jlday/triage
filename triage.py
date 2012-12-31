@@ -166,7 +166,7 @@ def EnableGFlags(proc=None):
 	global verbose
 	global WinDbgPath
 	global target
-	
+
 	if proc == None:
 		proc = target[target.rfind("\\") + 1:]
 	if verbose:
@@ -179,7 +179,7 @@ def DisableGFlags(proc=None):
 	global verbose
 	global WinDbgPath
 	global target
-	
+
 	if proc == None:
 		proc = target[target.rfind("\\") + 1:]
 	if verbose:
@@ -194,19 +194,19 @@ def GenerateCrashReport(file):
 	global max_time
 	global logoutput
 	global verbose
-	
+
 	if kill_windows:
 		import window_killer
-	
+
 	windowKiller = None
 	test = None
-	
+
 	try:	
 		if os.path.exists(logoutput):
 			os.remove(logoutput)
-		
+
 		test = proc = subprocess.Popen(WinDbgPath + os.sep + "windbg.exe -Q -c \"$$<" + WinDbgPath + os.sep + "triage.wds; g;\" -o \"" + target + "\" \"" + file + "\"")
-		
+
 		time.sleep(1)
 		timeout = 0
 		while timeout < 3:
@@ -218,11 +218,11 @@ def GenerateCrashReport(file):
 				break
 			time.sleep(1)
 			timeout += 1
-		
+
 		if kill_windows:
 			windowKiller = window_killer.MultithreadedWindowKiller(proc.pid)
 			windowKiller.start()
-		
+
 		timeout = 0
 		while test.poll() == None and timeout < max_time:
 			time.sleep(1)
@@ -251,13 +251,13 @@ def GenerateCrashReport(file):
 		if not os.path.exists(logoutput):
 			return None
 	return logoutput
-	
+
 # Initializes the crash files used for triaging	
 def InitTestCases(dir=None):
 	global crashFiles
 	global crashDir
 	global verbose
-	
+
 	if dir != None:
 		crashDir = dir
 	if verbose:
@@ -279,18 +279,18 @@ def GetHash(data):
 # Returns the full path of that directory
 def FindHashGroupPath(hash, baseDir=None):
 	global outputDir
-	
+
 	if baseDir == None:
 		baseDir = outputDir
 	dirs = []
-	
+
 	for file in os.listdir(baseDir):
 		if os.path.isdir(file):
 			if file == hash:
 				return baseDir + os.sep + hash
 			else:
 				dirs += [file]
-	
+
 	for dir in dirs:
 		returnValue = FindHashGroupPath(hash, baseDir + os.sep + dir)
 		if returnValue != None:
@@ -303,45 +303,45 @@ def BuildPath(path):
 	if not os.path.exists(path):
 		BuildPath(path[:path.rfind(os.sep)])
 		os.mkdir(path)
-	
+
 # Processes all of the crash reports in a hash folder and returns the path of the 
 # proper category to place the hash group in
 def SortHashDir(hashDir):
 	global outputDir
-	
+
 	registersChanged = False
 	registerHash = []
 	exploitability = []
-	
+
 	for file in os.listdir(hashDir):
 		if not file.endswith(".txt") or os.path.isdir(file):
 			continue
-				
+
 		data = open(hashDir + os.sep + file, "r").read()
 		bang_rank = data[data.find("Exploitability Classification: ") + len("Exploitability Classification: "):]
 		registers = bang_rank
 		bang_rank = bang_rank[:bang_rank.find("\n")]
 		exploitability += [bang_rank]
-		
+
 		registers = registers[registers.find("********************************************************************************") + len("********************************************************************************") + 1:]
 		registers = registers[:registers.find("********************************************************************************")]
-		
+
 		esp = registers[registers.find("esp="):]
 		esp = esp[:esp.find(" ")]
-		
+
 		ebp = registers[registers.find("ebp="):]
 		ebp = ebp[:ebp.find(" ")]
-		
+
 		registers = registers[:registers.find("\n")]
 		registers += " " + esp + " " + ebp
 		registerHash += [hashlib.md5(registers).hexdigest()]
-	
+
 	regprev = registerHash[0]
 	for register in registerHash:
 		if register != regprev:
 			registersChanged = True
 			break
-			
+
 	best = exploitability[0]
 	for exp in exploitability:
 		if best == "EXPLOITABLE":
@@ -366,11 +366,11 @@ def SortHashDir(hashDir):
 def CleanupFiles(path):
 	dirs = []
 	files = os.listdir(path)
-	
+
 	if len(files) == 0:
 		os.rmdir(path)
 		return
-	
+
 	for file in files:
 		if os.path.isdir(path + os.sep + file):
 			CleanupFiles(path + os.sep + file)
@@ -390,11 +390,11 @@ def MoveFile(source, destination):
 		while os.path.exists(destination[:destination.rfind(".")] + "_(" + str(dup) + ")" + destination[destination.rfind("."):]):
 			dup += 1
 		destination = destination[:destination.rfind(".")] + "_(" + str(dup) + ")" + destination[destination.rfind("."):]
-	try:
-		shutil.move(source, destination)
-	except:
-		time.sleep(3)
-		shutil.move(source, destination)
+	while os.path.exists(source):
+		try:
+			shutil.move(source, destination)
+		except:
+			time.sleep(3)
 
 # Main loop for triaging.
 # Takes all files, runs them through a debugger and sorts the output
@@ -406,63 +406,63 @@ def RunTriage():
 	global logoutput
 	global useGFlags
 	global verbose
-	
+
 	count = 1
-	
+
 	try:
 		if useGflags:
 			EnableGFlags()
-		
+
 		if verbose:
 			print "Starting Triage..."
-		
+
 		if not os.path.exists(outputDir):
 			os.mkdir(outputDir)
-		
+
 		for file in crashFiles:
 			if verbose and ((reportEvery > 1 and count % reportEvery == 1) or (reportEvery == 1 and count % reportEvery == 0)):
 				print "Working on file " + str(count) + " of " + str(len(crashFiles)) + " (" + ("%0.2f" % (count * 100.0 / len(crashFiles))) + "%)"
-			
+
 			report = GenerateCrashReport(file)
 			if report == None or not "Hash=" in open(report, "r").read():
 				if verbose:
 					print "Failed to reproduce file: " + file[file.rfind(os.sep) + 1:]
 				if not os.path.exists(outputDir + os.sep + "UnableToReproduce"):
 					os.mkdir(outputDir + os.sep + "UnableToReproduce")
-				
+
 				MoveFile(file, outputDir + os.sep + "UnableToReproduce" + os.sep + file[file.rfind(os.sep) + 1:])
 			else:
 				shutil.move(report, file + "-" + logoutput)
 				report = file + "-" + logoutput
 				data = open(report, "r").read()
-				
+
 				hash = GetHash(data)
 				group = FindHashGroupPath(hash)
-				
+
 				if group == None:
 					if not os.path.exists(outputDir + os.sep + hash):
 						os.mkdir(outputDir + os.sep + hash)
 					group = outputDir + os.sep + hash
-				
+
 				MoveFile(report, group + os.sep + report[report.rfind(os.sep) + 1:])
 				MoveFile(file, group + os.sep + file[file.rfind(os.sep) + 1:])
-				
+
 				newPath = SortHashDir(group)
-				
+
 				BuildPath(newPath)
-				
+
 				for newFile in os.listdir(group):
 					MoveFile(group + os.sep + newFile, newPath)
-			
+
 			count += 1
 	except KeyboardInterrupt:
 		CleanupFiles(outputDir)
 		if useGflags:
 			DisableGFlags()
 		raise KeyboardInterrupt()	
-	
+
 	CleanupFiles(outputDir)
-	
+
 # Prints the command line usage if run as stand alone application.
 def PrintUsage():
 	global Usage
@@ -480,11 +480,11 @@ def main(args):
 	global kill_windows
 	global continuous
 	global verbose
-	
+
 	if len(args) < 2:
 		PrintUsage()
 		exit()
-		
+
 	optlist, argv = getopt.getopt(args[1:], 'b:o:w:r:m:kgcvh')
 	for opt in optlist:
 		if opt[0] == '-b':
@@ -508,20 +508,20 @@ def main(args):
 		elif opt[0] == '-h':
 			PrintUsage()
 			exit()
-	
+
 	if len(argv) < 1:
 		PrintUsage()
 		exit()
 	target = argv[0]
-	
-	
+
+
 	try:
 		while True: # haha, ghetto do-while loops make me laugh
 			InitTestCases()
-			
+
 			if verbose:
 				print "Starting Triage Session..."
-			
+
 			RunTriage()
 			if not continuous:
 				break
