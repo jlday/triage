@@ -66,39 +66,14 @@
 ####################################################################################
 # Additional Installation Notes:
 # 		The following WinDbg Script needs to be placed in the same directory as
-# the WinDbg executable.  It should be called "triage.wds".
+# the WinDbg executable.  It should be called "monitor.wds".
 '''
-* triage.wds - run this script upon launching an executable, 
+* monitor.wds - run this script upon launching an executable, 
 *      when a crash occurs a file named "crash_details.txt" 
-*      is written with the output of !analyze -v and 
-*      !exploitable
+*      is written with the output of !exploitable
 
 sxr
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h av
-sxi asrt
-sxi aph
-sxi bpe
-sxi eh
-sxi clr 
-sxi clrn
-sxi cce
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h dm
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h gp
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h ii
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h ip
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h dz
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h iov
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h ch
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h isc
-sxi 3c
-sxi svh
-sxi sse
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h sbo
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h sov
-sxi vs
-sxd -c "!load msec.dll; !sym quiet; .logopen crash_details.txt; !analyze -v; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; q" -h wkd
-sxi wob
-sxi wos
+sxd -c "!load msec.dll; .logopen crash_details.txt; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; k; .echo ********************************************************************************; q" -h av
 
 '''
 ####################################################################################
@@ -106,7 +81,6 @@ sxi wos
 Usage = '''
 python triage.py [options] [target application]
 options:
-
 
 -b [path to base directory]
 	path to directory containing input files to be triaged
@@ -117,7 +91,18 @@ options:
 -w [path to WinDbg Installation]
 	path to the installation of WinDbg
 	Default: "WinDbg"
--r [report interval]
+-t [path to test file directory]
+	path where test files are stored.  Each iteration of the fuzzer
+	will create two copies of the fuzzed file, one to store in the output
+	directory and one to test.  This avoids any changes to the test file 
+	during testing that may be caused by auto save and sanitize features 
+	in the target program.  This file is always deleted after every test.
+	Default: "Tests"
+-a [arguments]
+	string representing additional arguements to be passed to the target
+	application during each test.
+	Default: ""
+-i [report interval]
 	number of test cases to report progress, progress only reported if -v 
 	is also specified
 	Default: 1
@@ -129,6 +114,11 @@ options:
 	dialog boxes spawned by the program.  This window_killer is spawned
 	for each instance of the target application that is spawned and only 
 	deals with windows belonging to the target's PID
+-e
+	Uses the window_killer to attempt to close the main window of the target
+	application before killing the process.  This is used to trigger any 
+	events that might occur upon closing the application normally for process
+	cleanup
 -g
 	Do not use GFlags while triaging.
 -c
@@ -149,12 +139,15 @@ import psutil
 crashFiles = []
 crashDir = outputDir = "Crashes"
 WinDbgPath = "WinDbg"
+TestDir = "Tests"
 target = ""
+target_args = ""
 logoutput = "crash_details.txt"
 max_time = 20
 reportEvery = 1
 useGflags = True
 kill_windows = False
+close_main = False
 continuous = False
 verbose = False
 ####################################################################################
@@ -190,22 +183,29 @@ def DisableGFlags(proc=None):
 # Returns the path to the output file
 def GenerateCrashReport(file):
 	global WinDbgPath
+	global TestDir
 	global target
 	global max_time
 	global logoutput
 	global verbose
 
-	if kill_windows:
+	if kill_windows or close_main:
 		import window_killer
 
+	if not os.path.exists(TestDir):
+		os.mkdir(TestDir)
+		
 	windowKiller = None
 	test = None
 
+	testname = TestDir + os.sep + file[file.rfind(os.sep) + 1:]
+	shutil.copy(file, testname)
+	
 	try:	
 		if os.path.exists(logoutput):
 			os.remove(logoutput)
 
-		test = proc = subprocess.Popen(WinDbgPath + os.sep + "windbg.exe -Q -c \"$$<" + WinDbgPath + os.sep + "triage.wds; g;\" -o \"" + target + "\" \"" + file + "\"")
+		test = proc = subprocess.Popen(WinDbgPath + os.sep + "windbg.exe -Q -c \"$$<" + WinDbgPath + os.sep + "monitor.wds; g;\" -o \"" + target + "\" " + target_args + " \"" + testname + "\"")
 
 		time.sleep(1)
 		timeout = 0
@@ -229,6 +229,8 @@ def GenerateCrashReport(file):
 			timeout += 1
 		if windowKiller != None:
 			windowKiller.start_halt()
+		if close_main: 
+			window_killer.CloseMain(proc.pid)
 		test.kill()
 		time.sleep(1)
 		if timeout == max_time and not os.path.exists(logoutput):
@@ -240,6 +242,11 @@ def GenerateCrashReport(file):
 			test.kill()
 		except:
 			pass
+		while os.path.exists(testname):
+			try:
+				os.remove(testname)
+			except:
+				pass
 		raise KeyboardInterrupt()
 	except:
 		if windowKiller != None:
@@ -248,8 +255,18 @@ def GenerateCrashReport(file):
 			test.kill()
 		except:
 			pass
+		while os.path.exists(testname):
+			try:
+				os.remove(testname)
+			except:
+				pass
 		if not os.path.exists(logoutput):
 			return None
+	while os.path.exists(testname):
+		try:
+			os.remove(testname)
+		except:
+			pass
 	return logoutput
 
 # Initializes the crash files used for triaging	
@@ -396,6 +413,29 @@ def MoveFile(source, destination):
 		except:
 			time.sleep(3)
 
+# Parses a crash details file and sorts it and the crash file into their
+# corresponding hash folders 
+def ProcessDetailsFile(report, crash_file):
+	data = open(report, "r").read()
+
+	hash = GetHash(data)
+	group = FindHashGroupPath(hash)
+
+	if group == None:
+		if not os.path.exists(outputDir + os.sep + hash):
+			os.mkdir(outputDir + os.sep + hash)
+		group = outputDir + os.sep + hash
+
+	MoveFile(report, group + os.sep + report[report.rfind(os.sep) + 1:])
+	MoveFile(crash_file, group + os.sep + crash_file[crash_file.rfind(os.sep) + 1:])
+
+	newPath = SortHashDir(group)
+
+	BuildPath(newPath)
+
+	for newFile in os.listdir(group):
+		MoveFile(group + os.sep + newFile, newPath)
+	
 # Main loop for triaging.
 # Takes all files, runs them through a debugger and sorts the output
 # into an organized directory structure 
@@ -422,7 +462,7 @@ def RunTriage():
 		for file in crashFiles:
 			if verbose and ((reportEvery > 1 and count % reportEvery == 1) or (reportEvery == 1 and count % reportEvery == 0)):
 				print "Working on file " + str(count) + " of " + str(len(crashFiles)) + " (" + ("%0.2f" % (count * 100.0 / len(crashFiles))) + "%)"
-
+			
 			report = GenerateCrashReport(file)
 			if report == None or not "Hash=" in open(report, "r").read():
 				if verbose:
@@ -434,25 +474,8 @@ def RunTriage():
 			else:
 				shutil.move(report, file + "-" + logoutput)
 				report = file + "-" + logoutput
-				data = open(report, "r").read()
-
-				hash = GetHash(data)
-				group = FindHashGroupPath(hash)
-
-				if group == None:
-					if not os.path.exists(outputDir + os.sep + hash):
-						os.mkdir(outputDir + os.sep + hash)
-					group = outputDir + os.sep + hash
-
-				MoveFile(report, group + os.sep + report[report.rfind(os.sep) + 1:])
-				MoveFile(file, group + os.sep + file[file.rfind(os.sep) + 1:])
-
-				newPath = SortHashDir(group)
-
-				BuildPath(newPath)
-
-				for newFile in os.listdir(group):
-					MoveFile(group + os.sep + newFile, newPath)
+				
+				ProcessDetailsFile(report, file)
 
 			count += 1
 	except KeyboardInterrupt:
@@ -473,11 +496,14 @@ def main(args):
 	global crashDir 
 	global outputDir
 	global WinDbgPath
+	global TestDir
 	global target 
+	global target_args
 	global max_time
 	global reportEvery
 	global useGflags
 	global kill_windows
+	global close_main
 	global continuous
 	global verbose
 
@@ -485,7 +511,7 @@ def main(args):
 		PrintUsage()
 		exit()
 
-	optlist, argv = getopt.getopt(args[1:], 'b:o:w:r:m:kgcvh')
+	optlist, argv = getopt.getopt(args[1:], 'b:o:w:t:a:i:m:kegcvh')
 	for opt in optlist:
 		if opt[0] == '-b':
 			crashDir = opt[1]
@@ -493,12 +519,18 @@ def main(args):
 			outputDir = opt[1]
 		elif opt[0] == '-w':
 			WinDbgDir = opt[1]
-		elif opt[0] == '-r':
+		elif opt[0] == '-t':
+			TestDir = opt[1]
+		elif opt[0] == '-a':
+			target_args = opt[1]
+		elif opt[0] == '-i':
 			reportEvery = int(opt[1])
 		elif opt[0] == '-m':
 			max_time = int(opt[1])
 		elif opt[0] == '-k':
 			kill_windows = True
+		elif opt[0] == '-e':
+			close_main = True
 		elif opt[0] == '-g':
 			useGflags = False
 		elif opt[0] == '-c':

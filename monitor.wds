@@ -1,0 +1,6 @@
+* monitor.wds - run this script upon launching an executable, 
+*      when a crash occurs a file named "crash_details.txt" 
+*      is written with the output of !exploitable
+
+sxr
+sxd -c "!load msec.dll; .logopen crash_details.txt; .echo ********************************************************************************; !exploitable; .echo ********************************************************************************; r; .echo ********************************************************************************; u; .echo ********************************************************************************; k; .echo ********************************************************************************; q" -h av
